@@ -93,14 +93,26 @@ STRICT RULES — YOU MUST FOLLOW ALL OF THESE:
 5. For regulations, always state the jurisdiction and effective date from the source.
 6. End every regulation answer with: "Please consult a licensed attorney for legal advice."
 7. If someone asks about a topic not covered in the sources, say so — do not answer from memory.`
-    : `You are the Home Growth OS AI Assistant.
+    : `You are the Home Growth OS AI Assistant for property management at Cypress Lawn.
 
-No relevant knowledge was found in the knowledge base for this question.
+The knowledge base does not yet have specific documents for this question, so answer using general property management knowledge.
 
-You MUST respond with exactly this message and nothing else:
-"I don't have information about this topic in my knowledge base yet. Please ask your administrator to add relevant documents using the KB Builder tab, or try rephrasing your question with different keywords."`;
+Be helpful, concise and professional. If the question is about regulations, note that the answer is general and jurisdiction-specific rules may apply.
 
-  // IMPORTANT: Include system prompt on EVERY message, not just the first.
+End your response with: "Note: For specific policies or regulations, please ask your administrator to add relevant documents to the knowledge base."`;
+
+
+  // If no knowledge found, log the question for admin review
+  let unansweredId = null;
+  if (!knowledgeContext) {
+    unansweredId = uuidv4();
+    try {
+      dbRun(`INSERT INTO unanswered_questions (id, question, session_id, jurisdiction)
+             VALUES (?, ?, ?, ?)`,
+        [unansweredId, message, session.id, jurisdiction || null]);
+      console.log(`📋 Unanswered: "${message.slice(0, 60)}"`);
+    } catch(e) { console.error('Failed to log unanswered:', e.message); }
+  }
   // This ensures Gemini always knows it must stay within the knowledge base.
   const contents = [];
 
@@ -121,7 +133,7 @@ You MUST respond with exactly this message and nothing else:
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  res.write(`data: ${JSON.stringify({ type: 'meta', sessionId: session.id, sources: sources.map(s => ({ id: s.id, title: s.title, tier: s.tier, jurisdiction: s.jurisdiction })) })}\n\n`);
+  res.write(`data: ${JSON.stringify({ type: 'meta', sessionId: session.id, sources: sources.map(s => ({ id: s.id, title: s.title, tier: s.tier, jurisdiction: s.jurisdiction })), unansweredId })}\n\n`);
 
   let fullResponse = '';
   try {
@@ -305,7 +317,65 @@ app.post('/api/scrape/deep', async (req, res) => {
   }
 });
 
-// ─── AI KNOWLEDGE BUILDER — single URL ────────────────────────────
+// ─── UNANSWERED QUESTIONS — log when AI has no answer ─────────────
+app.post('/api/unanswered', async (req, res) => {
+  await getDb();
+  const { question, sessionId, jurisdiction } = req.body;
+  if (!question) return res.status(400).json({ error: 'question required' });
+  const id = uuidv4();
+  try {
+    dbRun(`INSERT INTO unanswered_questions (id, question, session_id, jurisdiction)
+           VALUES (?, ?, ?, ?)`,
+      [id, question, sessionId || null, jurisdiction || null]);
+    console.log(`📋 Unanswered question logged: "${question.slice(0, 60)}"`);
+    res.json({ id, logged: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// ─── UNANSWERED QUESTIONS — get all for admin review ──────────────
+app.get('/api/unanswered', async (req, res) => {
+  await getDb();
+  try {
+    const rows = dbAll(
+      `SELECT * FROM unanswered_questions ORDER BY created_at DESC LIMIT 100`
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// ─── UNANSWERED QUESTIONS — admin answers a question ──────────────
+app.patch('/api/unanswered/:id', async (req, res) => {
+  await getDb();
+  const { admin_answer, resource_url, resource_title, status } = req.body;
+  try {
+    dbRun(`UPDATE unanswered_questions
+           SET admin_answer = ?, resource_url = ?, resource_title = ?,
+               status = ?, answered_at = datetime('now')
+           WHERE id = ?`,
+      [admin_answer || null, resource_url || null, resource_title || null,
+       status || 'answered', req.params.id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// ─── UNANSWERED QUESTIONS — check if question has been answered ────
+// Widget polls this to show admin response to user
+app.get('/api/unanswered/:id', async (req, res) => {
+  await getDb();
+  try {
+    const row = dbGet(`SELECT * FROM unanswered_questions WHERE id = ?`, [req.params.id]);
+    if (!row) return res.status(404).json({ error: 'not found' });
+    res.json(row);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
 // Uses Gemini to intelligently extract regulation content from any URL
 app.post('/api/build/url', async (req, res) => {
   const { url } = req.body;

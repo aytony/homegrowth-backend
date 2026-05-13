@@ -15,8 +15,20 @@ export async function getDb() {
   if (db) return db;
   if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
   const SQL = await initSqlJs();
-  db = existsSync(DB_PATH) ? new SQL.Database(readFileSync(DB_PATH)) : new SQL.Database();
-  initSchema();
+
+  const isNew = !existsSync(DB_PATH);
+
+  if (!isNew) {
+    // Load existing DB — preserve all existing knowledge
+    db = new SQL.Database(readFileSync(DB_PATH));
+    // Only add missing tables, never drop or overwrite
+    initSchema(false);
+  } else {
+    // Fresh DB — create schema and save
+    db = new SQL.Database();
+    initSchema(true);
+  }
+
   return db;
 }
 
@@ -26,7 +38,9 @@ export function saveDb() {
 }
 
 // ─── SCHEMA ────────────────────────────────────────────────────────
-function initSchema() {
+// isNew = true means we just created a fresh DB and must save immediately
+// isNew = false means we loaded an existing DB — add missing tables but don't overwrite
+function initSchema(isNew = false) {
   db.run(`CREATE TABLE IF NOT EXISTS knowledge_docs (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -58,7 +72,21 @@ function initSchema() {
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`);
 
-  saveDb();
+  db.run(`CREATE TABLE IF NOT EXISTS unanswered_questions (
+    id TEXT PRIMARY KEY,
+    question TEXT NOT NULL,
+    session_id TEXT,
+    jurisdiction TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    admin_answer TEXT,
+    resource_url TEXT,
+    resource_title TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    answered_at TEXT
+  )`);
+
+  // Only write to disk for a brand-new database
+  if (isNew) saveDb();
 }
 
 // ─── QUERY HELPERS ─────────────────────────────────────────────────
