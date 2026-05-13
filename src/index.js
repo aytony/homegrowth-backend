@@ -102,16 +102,20 @@ Be helpful, concise and professional. If the question is about regulations, note
 End your response with: "Note: For specific policies or regulations, please ask your administrator to add relevant documents to the knowledge base."`;
 
 
-  // If no knowledge found, log the question for admin review
-  let unansweredId = null;
-  if (!knowledgeContext) {
-    unansweredId = uuidv4();
+  // Log unanswered question if no knowledge context found
+  // Also log if AI returns "don't have enough information" — detected after streaming
+  let unansweredId = uuidv4(); // always create an ID
+  let shouldLog = !knowledgeContext; // definitely log if no knowledge
+
+  if (shouldLog) {
     try {
       dbRun(`INSERT INTO unanswered_questions (id, question, session_id, jurisdiction)
              VALUES (?, ?, ?, ?)`,
         [unansweredId, message, session.id, jurisdiction || null]);
-      console.log(`📋 Unanswered: "${message.slice(0, 60)}"`);
-    } catch(e) { console.error('Failed to log unanswered:', e.message); }
+      console.log(`📋 Unanswered (no knowledge): "${message.slice(0, 60)}"`);
+    } catch(e) { console.error('Failed to log unanswered:', e.message); unansweredId = null; }
+  } else {
+    unansweredId = null; // will be set after streaming if AI says it can't answer
   }
   // This ensures Gemini always knows it must stay within the knowledge base.
   const contents = [];
@@ -171,6 +175,29 @@ End your response with: "Note: For specific policies or regulations, please ask 
 
     dbRun('INSERT INTO chat_messages (id, session_id, role, content, sources) VALUES (?, ?, ?, ?, ?)',
       [uuidv4(), session.id, 'assistant', fullResponse, JSON.stringify(sources.map(s => s.id))]);
+
+    // If AI said it couldn't answer (had knowledge context but still couldn't help)
+    // log it to unanswered queue now
+    const cantAnswerPhrases = [
+      "don't have enough information",
+      "don't have information about",
+      "not in my knowledge base",
+      "please ask your administrator",
+      "no information in my knowledge base",
+    ];
+    const aiCouldntAnswer = cantAnswerPhrases.some(p => fullResponse.toLowerCase().includes(p));
+    if (aiCouldntAnswer && !unansweredId) {
+      const newId = uuidv4();
+      try {
+        dbRun(`INSERT INTO unanswered_questions (id, question, session_id, jurisdiction)
+               VALUES (?, ?, ?, ?)`,
+          [newId, message, session.id, jurisdiction || null]);
+        console.log(`📋 Unanswered (AI couldn't answer): "${message.slice(0, 60)}"`);
+        // Send updated meta with the unanswered ID so frontend shows the notice
+        res.write(`data: ${JSON.stringify({ type: 'unanswered', unansweredId: newId })}\n\n`);
+      } catch(e) { console.error('Failed to log unanswered:', e.message); }
+    }
+
     res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
     res.end();
   } catch (err) {
