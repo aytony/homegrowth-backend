@@ -9,7 +9,7 @@ import { getDb, dbGet, dbAll, dbRun } from './db.js';
 import { retrieveKnowledge, getAllDocs } from './knowledge.js';
 
 const app = express();
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse&key=${GEMINI_API_KEY}`;
